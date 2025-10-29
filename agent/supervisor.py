@@ -34,6 +34,9 @@ logger = get_logger(__name__)
 load_dotenv()
 
 
+#TODO: work on why requests are not waiting for a response from the subagents and automatically going to planning again
+
+
 skills = AgentSkill(
     id="dynamic_planner_orchestrator",
     name="Dynamic Planner & Orchestrator",
@@ -71,11 +74,7 @@ def get_text_from_a2a_message(message: Message | None) -> str:
 
 async def call_sub_agent(url: str, query: str, docs: list[str] | None = None) -> str:
     try:
-        if docs is not None:
-            payload = json.dumps({"query": query, "docs": docs})
-            resp = await send_text_async_url(url, text=payload)
-        else:
-            resp = await send_text_async_url(url, text=query)
+        resp = await send_text_async_url(url, text=query)
         return extract_text(resp)
     except Exception as e:
         return f"ERROR: Failed to connect to the agent at {url}."
@@ -188,20 +187,10 @@ async def execute_agent_call_node(state: SupervisorState) -> SupervisorState:
     if not agent_url:
         result = f"{Colors.FAIL}ERROR: Could not find an agent with skill ID '{agent_call.agent_id}'.{Colors.ENDC}"
     else:
-        if agent_call.agent_id == "summarize_documents":
-            result = await call_sub_agent(
-                agent_url,
-                agent_call.query,
-                docs = state["intermediate_results"]
-            )
-        else:
-            result = await call_sub_agent(agent_url, agent_call.query)
+        result = await call_sub_agent(agent_url, agent_call.query)
     state["intermediate_results"] = [result]
     logger.info(state["intermediate_results"])
 
-    if agent_call.agent_id == "retrieve_documents":
-        state["retrieval_done"] = True
-        state["intermediate_results"].append("Retrieved and reranked documents are available in JSON")
     
     state["step_count"] += 1
     return state

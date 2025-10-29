@@ -16,4 +16,4 @@ async def handle_request(query: str) -> str:
     return feedback
 
 if __name__ == "__main__":
-    asyncio.run(handle_request("Hello how are you?"))
+    asyncio.run(handle_request("What is the weather in austin texas?"))
