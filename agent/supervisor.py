@@ -9,9 +9,11 @@ import time
 import traceback
 
 
-#langchain/graph imports
+#langchain/graph/fuse imports
 from langchain_core.prompts import ChatPromptTemplate 
 from langgraph.graph import StateGraph, END, START
+import langfuse
+from langfuse import get_client, observe
 
 
 #a2a imports
@@ -31,7 +33,10 @@ from utils.logging_utils import Colors, get_logger, configure_logging
 
 configure_logging()
 logger = get_logger(__name__)
+
 load_dotenv()
+
+langfuse_client = get_client()
 
 
 #TODO: work on why requests are not waiting for a response from the subagents and automatically going to planning again
@@ -70,7 +75,6 @@ def get_text_from_a2a_message(message: Message | None) -> str:
         if isinstance(actual_part, TextPart):
             return actual_part.text
     return ""
-
 
 async def call_sub_agent(url: str, query: str, docs: list[str] | None = None) -> str:
     try:
@@ -113,7 +117,7 @@ async def call_sub_agent(url: str, query: str, docs: list[str] | None = None) ->
 #     logger.info(f"{Colors.OKCYAN}[TIME FOR AGENT DISCOVERY]: {end_time_dicovery - start_time_dicovery}{Colors.ENDC}")
 #     return state
 
-
+@observe(name="discover_agents_node")
 async def discover_agents_node(state: SupervisorState) -> SupervisorState:
     """
     Discovers available sub-agents by fetching their agent cards from 
@@ -141,7 +145,7 @@ async def discover_agents_node(state: SupervisorState) -> SupervisorState:
     logger.info(f"{Colors.OKBLUE}[TIME FOR DISCOVERY]: {end_time_discovery - start_time_discovery:.2f}s{Colors.ENDC}")
     return state
 
-
+@observe(name="planner_node")
 async def planner_node(state: SupervisorState) -> SupervisorState:
     logger.info(f"{Colors.HEADER}\n --- Step {state['step_count'] + 2}: Planning ---{Colors.ENDC}")
     agent_descriptions = "\n".join(
@@ -168,6 +172,7 @@ async def planner_node(state: SupervisorState) -> SupervisorState:
     print(f"Thought: {plan.thought}")
     return state
 
+@observe(name="execute_agent_call_node")
 async def execute_agent_call_node(state: SupervisorState) -> SupervisorState:
     plan = state["plan"]
     if not plan.agent_call:
@@ -194,7 +199,7 @@ async def execute_agent_call_node(state: SupervisorState) -> SupervisorState:
     
     state["step_count"] += 1
     return state
-
+@observe(name="final_answer_node")
 async def final_answer_node(state: SupervisorState) -> SupervisorState:
     logger.info(f"{Colors.HEADER}--- Final Step: Synthesizing Answer ---{Colors.ENDC}")
     synthesizer_prompt = ChatPromptTemplate.from_messages([
@@ -248,16 +253,19 @@ class SupervisorExecutor(AgentExecutor):
             query = get_text_from_a2a_message(context.message)
             if not query: raise ValueError("No user query")
 
-            logger.info(f"{Colors.HEADER}--- Supervisor Graph starting with query: '{query}'---{Colors.ENDC}")
-            initial_state = {"original_query": query, "intermediate_results": [], "step_count":0, "retrieval_done": False}
+            with langfuse_client.start_as_current_span(name="supervisor-execution", input=query) as span:
 
-            final_state = await supervisor_agent_graph.ainvoke(initial_state, {"recursion_limit": 15})
+                logger.info(f"{Colors.HEADER}--- Supervisor Graph starting with query: '{query}'---{Colors.ENDC}")
+                initial_state = {"original_query": query, "intermediate_results": [], "step_count":0, "retrieval_done": False}
 
-            response_text = final_state.get("final_answer", "")
-            logger.info(f"{Colors.HEADER}---Supervisor Graph finished with response: '{response_text}'---{Colors.ENDC}")
-            final_message = Message(message_id=f"response-msg-{uuid4().hex}", role=Role.agent, parts=[TextPart(text=response_text)])
-            print(response_text)
-            await event_queue.enqueue_event(final_message)
+                final_state = await supervisor_agent_graph.ainvoke(initial_state, {"recursion_limit": 15})
+
+                response_text = final_state.get("final_answer", "")
+                span.update(output=response_text)
+                logger.info(f"{Colors.HEADER}---Supervisor Graph finished with response: '{response_text}'---{Colors.ENDC}")
+                final_message = Message(message_id=f"response-msg-{uuid4().hex}", role=Role.agent, parts=[TextPart(text=response_text)])
+                print(response_text)
+                await event_queue.enqueue_event(final_message)
         except Exception as e:
             logger.info(f"{Colors.FAIL}Error in Supervisor execution: {e}{Colors.ENDC}")
             traceback.print_exc()
@@ -265,6 +273,7 @@ class SupervisorExecutor(AgentExecutor):
             await event_queue.enqueue_event(error_message)
         finally:
             await event_queue.close()
+            langfuse_client.flush()
 
     async def cancel(self, context, event_queue):
         pass
