@@ -23,7 +23,7 @@ from a2a.types import (
 AgentCard, AgentCapabilities, AgentSkill, Message, Role, TextPart)
 
 #custom imports
-from llm.llm import client_llama
+from llm.llm import client
 from utils.protocol_wrappers import (extract_text, send_text_async_url) 
 from utils.config import SUPERVISOR_PORT, MAX_STEPS, SUBAGENT_URLS
 from utils.server import run_agent_blocking 
@@ -61,7 +61,7 @@ card = AgentCard(
     default_output_modes=["text/plain"]
 )
 
-llm = client_llama
+llm = client
 
 def get_text_from_a2a_message(message: Message | None) -> str:
     """
